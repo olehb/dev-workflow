@@ -137,7 +137,7 @@ gitc() {
   fi
 
   if $review_requested; then
-    yellow_text "$commit_msg"
+    echo "$commit_msg"
     return 0
   fi
 
