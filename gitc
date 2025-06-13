@@ -141,13 +141,16 @@ gitc() {
     return 0
   fi
 
-  # commit using stdin (avoids shell-quoting issues)
   printf '%s\n' "$commit_msg" | git commit --no-verify -F - || return 1
   green_text "Committed."
 
-  # prompt for push
-  read -r -p "Push now? [y/N]: " push_answer
-  if [[ $push_answer =~ ^[Yy]$ ]]; then
-    git push && green_text "Pushed."
+  if [ -n "$ZSH_VERSION" ]; then
+    read "push_answer?Do you want to run 'git push'? [y/N]: "
+  else
+    read -p "Do you want to run 'git push'? [y/N]: " push_answer
+  fi
+
+  if [[ "$push_answer" =~ ^[Yy]$ ]]; then
+    git push
   fi
 }
