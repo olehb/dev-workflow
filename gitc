@@ -91,9 +91,9 @@ gitc() {
 
   # run pre-commit on staged files only
   if [[ -f $git_root/.pre-commit-config.yaml ]]; then
-    mapfile -t staged_files < <(git diff --name-only --cached)
-    if [[ ${#staged_files[@]} -gt 0 ]]; then
-      pre-commit run --files "${staged_files[@]}" || {
+    staged_files=$(git diff --name-only --cached | xargs)
+    if [[ -n $staged_files ]]; then
+      pre-commit run || {
         red_text "Pre-commit hooks failed; fix issues and retry."
         git reset --soft HEAD
         return 1
