@@ -41,7 +41,8 @@ gitc() {
   local prompt="$PROMPT_COMMIT_MESSAGE"
   local diff_cmd=(git diff --cached)
   local temperature=0.2 max_tokens=40
-  local model="${GITC_OPENAI_MODEL:-gpt-4o}"   # override via env if desired
+  local model="${GITC_OPENAI_MODEL:-gpt-4.1}"   # override via env if desired
+  local review_model="${GITC_OPENAI_REVIEW_MODEL:-gpt-5-reasoning-alpha-2025-07-25}"
 
   local git_root; git_root=$(git rev-parse --show-toplevel) || return 1
 
@@ -52,7 +53,7 @@ gitc() {
         diff_cmd=(git diff --cached -U20)
         max_tokens=1000
         prompt="$PROMPT_REVIEW"
-        model="${GITC_OPENAI_REVIEW_MODEL:-gpt-4.1}"
+        model="$review_model"
         review_requested=true
         ;;
       p)
