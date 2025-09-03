@@ -4,7 +4,7 @@
 #        (or code-review) with OpenAI.
 #
 
-PROMPT_COMMIT_MESSAGE="Summarize the following code changes as a concise commit message."
+PROMPT_COMMIT_MESSAGE="Summarize the following code changes as a concise commit message. Maximum length: 50 words."
 PROMPT_REVIEW="Review the following code changes and report only substantive issues (correctness, security, performance, reliability). For each bug, start a new section on its own line with one of: '### 🐞 bug:' (low/medium), '### 🐞🐞 bug:' (high), or '### 🐞🐞🐞 bug:' (critical). After the header, briefly explain impact, evidence (file/line if possible), and a concrete fix. If no issues, output 'LGTM'."
 USER_PROMPT_REVIEW=""
 
@@ -38,8 +38,8 @@ gitc5() {
   local review_requested=false
   local prompt="$PROMPT_COMMIT_MESSAGE"
   local diff_cmd=(git diff --cached)
-  local max_tokens=256
-  local model="${GITC_OPENAI_MODEL:-gpt-5-nano}"   # fast default for commit messages
+  local max_tokens=512
+  local model="${GITC_OPENAI_MODEL:-gpt-5-mini}"   # fast default for commit messages
   local review_model="${GITC_OPENAI_REVIEW_MODEL:-gpt-5}"
   local reasoning_effort="${GITC_REASONING_EFFORT:-low}"
   local we_staged=false
