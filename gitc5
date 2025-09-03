@@ -5,7 +5,7 @@
 #
 
 PROMPT_COMMIT_MESSAGE="Summarize the following code changes as a concise commit message."
-PROMPT_REVIEW="Review the following code changes and provide feedback. Do you see any potential issues or bugs? If you see bugs, start bug report with '### 🐞 bug:' prefix. If you think a bug is severe, use two or three bug enojis 🐞."
+PROMPT_REVIEW="Review the following code changes and report only substantive issues (correctness, security, performance, reliability). For each bug, start a new section on its own line with one of: '### 🐞 bug:' (low/medium), '### 🐞🐞 bug:' (high), or '### 🐞🐞🐞 bug:' (critical). After the header, briefly explain impact, evidence (file/line if possible), and a concrete fix. If no issues, output 'LGTM'."
 USER_PROMPT_REVIEW=""
 
 yellow_text() { printf '\033[1;33m%s\033[0m\n' "$1"; }
@@ -18,19 +18,14 @@ Usage: gitc5|gitc [-a] [-r [-p "custom prompt"]] [-R <effort>] [path]
   -a   Stage all tracked changes (like \`git add -u\`)
   -r   Ask for a *review* instead of a commit message
   -p   Add a custom prompt to the review (only valid with -r)
-  -R   Reasoning effort: minimal|low|medium|high (env: GITC_REASONING_EFFORT)
+  -R   Reasoning effort for reviews: minimal|low|medium|high (env: GITC_REASONING_EFFORT). Ignored for commit messages.
   path Path (file/dir) to add & commit
 EOF
 }
 
-# (functions defined below)
-# --- prerequisites -----------------------------------------------------------
-
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || { red_text "Missing dependency: $1"; exit 1; }
 }
-
-# --- main --------------------------------------------------------------------
 
 gitc5() {
   need_cmd git
@@ -39,13 +34,15 @@ gitc5() {
 
   [[ -n $OPENAI_API_KEY ]] || { red_text "OPENAI_API_KEY not set."; return 1; }
 
-  local auto_add=false review_requested=false
+  local auto_add=false
+  local review_requested=false
   local prompt="$PROMPT_COMMIT_MESSAGE"
   local diff_cmd=(git diff --cached)
-  local max_tokens=40
-  local model="${GITC_OPENAI_MODEL:-gpt-5-mini}"   # fast default for commit messages
+  local max_tokens=256
+  local model="${GITC_OPENAI_MODEL:-gpt-5-nano}"   # fast default for commit messages
   local review_model="${GITC_OPENAI_REVIEW_MODEL:-gpt-5}"
-  local reasoning_effort="${GITC_REASONING_EFFORT:-medium}"
+  local reasoning_effort="${GITC_REASONING_EFFORT:-low}"
+  local we_staged=false
 
   local git_root; git_root=$(git rev-parse --show-toplevel) || return 1
 
@@ -56,6 +53,10 @@ gitc5() {
     else
       git rm -r --cached . >/dev/null 2>&1 || true
     fi
+  }
+
+  update_diff() {
+    DIFF=$("${diff_cmd[@]}");
   }
 
   while getopts ":ahrp:R:" opt; do
@@ -94,7 +95,16 @@ gitc5() {
     return 1
   fi
 
-  update_diff() { DIFF=$("${diff_cmd[@]}"); }
+  case "$reasoning_effort" in
+    ""|minimal|low|medium|high) : ;;
+    *) red_text "Invalid reasoning effort: '$reasoning_effort' (expected minimal|low|medium|high)."; return 1 ;;
+  esac
+
+  # In commit mode, ignore any reasoning effort (env/CLI) to prioritize speed
+  if ! $review_requested && [[ -n $reasoning_effort ]]; then
+    yellow_text "Ignoring reasoning effort in commit mode."
+    reasoning_effort=""
+  fi
 
   update_diff
   if [[ -n $path_to_commit ]]; then
@@ -105,6 +115,7 @@ gitc5() {
     echo "Adding $path_to_commit"
     git add --verbose -- "$path_to_commit" || return 1
     update_diff
+    we_staged=true
   fi
 
   if $auto_add; then
@@ -115,6 +126,7 @@ gitc5() {
     yellow_text "Staging all tracked changes (-u)."
     git add -u "$git_root"
     update_diff
+    we_staged=true
   fi
 
   if [[ -z $DIFF ]]; then
@@ -127,12 +139,12 @@ gitc5() {
     if git diff --name-only --cached | grep -q .; then
       if ! command -v pre-commit >/dev/null 2>&1; then
         red_text "pre-commit not found but .pre-commit-config.yaml exists. Install with: pipx install pre-commit (or pip install pre-commit)"
-        unstage_all
+        if $we_staged; then unstage_all; fi
         return 1
       fi
       pre-commit run || {
         red_text "Pre-commit hooks failed; fix issues and retry."
-        unstage_all
+        if $we_staged; then unstage_all; fi
         return 1
       }
       update_diff
@@ -147,29 +159,27 @@ gitc5() {
     prompt="${prompt}"$'\n\n'"${USER_PROMPT_REVIEW}"
   fi
 
-  # For commit messages, prioritize speed: disable reasoning entirely
-  if ! $review_requested; then
-    reasoning_effort=""
-  fi
-
   # Build input and call OpenAI Responses API
   local combined_input; combined_input="$prompt"$'\n\n'"$DIFF"
-  # Build payload with jq to avoid JSON quoting issues
-  case "$reasoning_effort" in
-    ""|minimal|low|medium|high) : ;;
-    *) yellow_text "Invalid reasoning effort: '$reasoning_effort' (expected minimal|low|medium|high). Falling back to 'medium'."; reasoning_effort="medium" ;;
-  esac
 
-  local json_payload; json_payload=$(jq -n --arg model "$model" --arg input_text "$combined_input" \
-    --argjson max_output_tokens "$max_tokens" --arg reasoning_effort "$reasoning_effort" '
-      {
-        model: $model,
-        input: $input_text,
-        max_output_tokens: $max_output_tokens
-      } as $base
-      | if ($reasoning_effort != "" and ($model | test("^gpt-5"))) then (. + {reasoning: {effort: $reasoning_effort}}) else . end
-    ')
-  local http_status response_body
+  # Construct JSON payload robustly (always include model)
+  local input_json model_json reason_json json_payload
+  input_json=$(jq -Rn --arg s "$combined_input" '$s') || { red_text "Failed to encode input"; return 1; }
+  model_json=$(jq -Rn --arg s "$model" '$s') || { red_text "Failed to encode model"; return 1; }
+  json_payload=$(printf '{"model": %s, "input": %s, "max_output_tokens": %s' "$model_json" "$input_json" "$max_tokens")
+  if [[ -n $reasoning_effort && $model == gpt-5* ]]; then
+    reason_json=$(jq -Rn --arg s "$reasoning_effort" '$s') || { red_text "Failed to encode reasoning"; return 1; }
+    json_payload+=$(printf ', "reasoning": {"effort": %s}' "$reason_json")
+  fi
+  json_payload+='}'
+  local http_status response_body response
+
+  if $review_requested; then
+    yellow_text "Requesting a code review for your staged changes... (model: $model, reasoning effort: $reasoning_effort)"
+  else
+    yellow_text "Requesting a commit message for your staged changes... (model: $model)"
+  fi
+
   response_body=$(curl -sS -w "\n%{http_code}" https://api.openai.com/v1/responses \
       -H "Content-Type: application/json" \
       -H "Authorization: Bearer $OPENAI_API_KEY" \
@@ -180,18 +190,18 @@ gitc5() {
     local api_err_msg
     api_err_msg=$(jq -r '.error.message // empty' <<<"$response") || true
     red_text "HTTP ${http_status}${api_err_msg:+ - $api_err_msg}"
-    unstage_all
+    if $we_staged; then unstage_all; fi
     return 1
   fi
 
   # extract message or error, check jq success
-  local commit_msg
-  if ! commit_msg=$(jq -r '[.output[]? | .content[]? | select(.type=="output_text") | .text] | join("\n") // empty' <<<"$response"); then
-    red_text "Failed to parse OpenAI API response (commit message) with jq."
-    unstage_all
+  local model_response
+  if ! model_response=$(jq -r '[.output[]? | .content[]? | select(.type=="output_text") | .text] | join("\n") // empty' <<<"$response"); then
+    red_text "Failed to parse OpenAI API response with jq."
+    if $we_staged; then unstage_all; fi
     return 1
   fi
-  if [[ -z $commit_msg ]]; then
+  if [[ -z $model_response ]]; then
     local api_err api_status reason
     api_err=$(jq -r '.error.message // empty' <<<"$response") || true
     api_status=$(jq -r '.status // empty' <<<"$response") || true
@@ -203,16 +213,21 @@ gitc5() {
     else
       red_text "OpenAI API error: unknown"
     fi
-    unstage_all
+    if $we_staged; then unstage_all; fi
     return 1
   fi
 
+  # Cosmetic: if model replies exactly "LGTM" and review was requested, add a sparkles emoji prefix; otherwise print the review
   if $review_requested; then
-    echo "$commit_msg"
+    if [[ "$model_response" == "LGTM" ]]; then
+      green_text "✨ LGTM!"
+    else
+      echo "$model_response"
+    fi
     return 0
   fi
 
-  printf '%s\n' "$commit_msg" | git commit --no-verify -F - || return 1
+  printf '%s\n' "$model_response" | git commit --no-verify -F - || return 1
   green_text "Committed."
 
   if [[ -t 0 && -t 1 ]]; then
