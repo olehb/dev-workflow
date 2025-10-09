@@ -6,6 +6,9 @@ import argparse
 import os
 import subprocess
 import sys
+import threading
+import time
+from itertools import cycle
 from typing import Sequence
 
 from .git_helpers import (
@@ -23,8 +26,85 @@ from .openai_client import OpenAIError, call_openai
 from .prompts import COMMIT_PROMPT, REVIEW_PROMPT
 
 
+RESET = "\033[0m"
+YELLOW = "\033[1;33m"
+GREEN = "\033[1;32m"
+
+
 def _print(msg: str, *, stream) -> None:
     stream.write(msg + ("\n" if not msg.endswith("\n") else ""))
+
+
+def _apply_color(text: str, color: str, stream=None) -> str:
+    stream = stream or sys.stdout
+    if hasattr(stream, "isatty") and stream.isatty():
+        return f"{color}{text}{RESET}"
+    return text
+
+
+def _yellow(text: str, *, stream=None) -> str:
+    return _apply_color(text, YELLOW, stream=stream)
+
+
+def _green(text: str, *, stream=None) -> str:
+    return _apply_color(text, GREEN, stream=stream)
+
+
+class ThinkingIndicator:
+    """Display a spinner with elapsed time while waiting for the model."""
+
+    def __init__(self, stream, label: str = "Thinking...", interval: float = 0.1) -> None:
+        self.stream = stream
+        self.label = label
+        self.interval = interval
+        self.enabled = hasattr(stream, "isatty") and stream.isatty()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._start_time = 0.0
+        self._stopped = False
+        self._elapsed = 0.0
+        self._width = 0
+
+    def start(self) -> None:
+        if self._stopped or self._thread is not None:
+            return
+        self._start_time = time.perf_counter()
+        if not self.enabled:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> float:
+        if self._stopped:
+            return self._elapsed
+        self._elapsed = time.perf_counter() - self._start_time
+        if self.enabled and self._thread is not None:
+            self._stop_event.set()
+            self._thread.join()
+            clear = "\r" + " " * self._width + "\r"
+            self.stream.write(clear)
+            self.stream.flush()
+        self._stopped = True
+        return self._elapsed
+
+    def _run(self) -> None:
+        frames = cycle("|/-\\")
+        while not self._stop_event.is_set():
+            frame = next(frames)
+            elapsed = time.perf_counter() - self._start_time
+            text = f"\r{frame} {self.label} {elapsed:.1f}s"
+            self._width = max(self._width, max(len(text) - 1, 0))
+            self.stream.write(text)
+            self.stream.flush()
+            if self._stop_event.wait(self.interval):
+                break
+
+
+def _format_model_info(model: str, reasoning_effort: str | None) -> str:
+    info = f"Model: {model}"
+    if reasoning_effort:
+        info += f" (effort: {reasoning_effort})"
+    return info
 
 
 def commit_command(args: argparse.Namespace) -> int:
@@ -65,6 +145,13 @@ def commit_command(args: argparse.Namespace) -> int:
         _print("No staged changes remain after running pre-commit.", stream=sys.stderr)
         return 0
 
+    model_info = _format_model_info(model, None)
+    _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
+    spinner = ThinkingIndicator(sys.stdout)
+    spinner.start()
+    response = None
+    openai_error: OpenAIError | None = None
+    elapsed = 0.0
     try:
         response = call_openai(
             prompt=prompt,
@@ -73,12 +160,19 @@ def commit_command(args: argparse.Namespace) -> int:
             max_tokens=args.max_tokens,
         )
     except OpenAIError as exc:
+        openai_error = exc
+    finally:
+        elapsed = spinner.stop()
+
+    if openai_error is not None:
         if we_staged:
             unstage_all()
-        _print(f"OpenAI error: {exc}", stream=sys.stderr)
+        _print(f"OpenAI error: {openai_error}", stream=sys.stderr)
         return 1
 
-    commit_message = response.text.strip()
+    _print(_green(f"✓ Model responded in {elapsed:.1f}s", stream=sys.stdout), stream=sys.stdout)
+
+    commit_message = response.text.strip() if response else ""
     if not commit_message:
         if we_staged:
             unstage_all()
@@ -135,6 +229,13 @@ def review_command(args: argparse.Namespace) -> int:
         _print("No staged changes to review.", stream=sys.stderr)
         return 0
 
+    model_info = _format_model_info(model, reasoning_effort or None)
+    _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
+    spinner = ThinkingIndicator(sys.stdout)
+    spinner.start()
+    response = None
+    openai_error: OpenAIError | None = None
+    elapsed = 0.0
     try:
         response = call_openai(
             prompt=prompt,
@@ -144,10 +245,17 @@ def review_command(args: argparse.Namespace) -> int:
             reasoning_effort=reasoning_effort or None,
         )
     except OpenAIError as exc:
-        _print(f"OpenAI error: {exc}", stream=sys.stderr)
+        openai_error = exc
+    finally:
+        elapsed = spinner.stop()
+
+    if openai_error is not None:
+        _print(f"OpenAI error: {openai_error}", stream=sys.stderr)
         return 1
 
-    text = response.text.strip()
+    _print(_green(f"✓ Model responded in {elapsed:.1f}s", stream=sys.stdout), stream=sys.stdout)
+
+    text = response.text.strip() if response else ""
     if text == "LGTM":
         _print("✨ LGTM!", stream=sys.stdout)
     else:
