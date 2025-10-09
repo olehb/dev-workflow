@@ -147,7 +147,7 @@ def commit_command(args: argparse.Namespace) -> int:
 
     model_info = _format_model_info(model, None)
     _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
-    spinner = ThinkingIndicator(sys.stdout)
+    spinner = ThinkingIndicator(sys.stdout, label="Generating commit message...")
     spinner.start()
     response = None
     openai_error: OpenAIError | None = None
@@ -231,7 +231,7 @@ def review_command(args: argparse.Namespace) -> int:
 
     model_info = _format_model_info(model, reasoning_effort or None)
     _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
-    spinner = ThinkingIndicator(sys.stdout)
+    spinner = ThinkingIndicator(sys.stdout, label="Reviewing changes...")
     spinner.start()
     response = None
     openai_error: OpenAIError | None = None
