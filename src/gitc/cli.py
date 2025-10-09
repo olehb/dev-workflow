@@ -100,11 +100,22 @@ class ThinkingIndicator:
                 break
 
 
-def _format_model_info(model: str, reasoning_effort: str | None) -> str:
-    info = f"Model: {model}"
+def _format_bytes(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB"]
+    value = float(num_bytes)
+    for unit in units:
+        if value < 1024.0:
+            return f"{value:.2f}{unit}"
+        value /= 1024.0
+    return f"{value:.2f}TB"
+
+
+def _format_model_info(model: str, reasoning_effort: str | None, diff: str) -> str:
+    size = _format_bytes(len(diff.encode("utf-8")))
+    info_parts = [f"Model: {model}", f"diff size: {size}"]
     if reasoning_effort:
-        info += f" (effort: {reasoning_effort})"
-    return info
+        info_parts.append(f"effort: {reasoning_effort}")
+    return ", ".join(info_parts)
 
 
 def commit_command(args: argparse.Namespace) -> int:
@@ -145,7 +156,7 @@ def commit_command(args: argparse.Namespace) -> int:
         _print("No staged changes remain after running pre-commit.", stream=sys.stderr)
         return 0
 
-    model_info = _format_model_info(model, None)
+    model_info = _format_model_info(model, None, diff)
     _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
     spinner = ThinkingIndicator(sys.stdout, label="Generating commit message...")
     spinner.start()
@@ -229,7 +240,7 @@ def review_command(args: argparse.Namespace) -> int:
         _print("No staged changes to review.", stream=sys.stderr)
         return 0
 
-    model_info = _format_model_info(model, reasoning_effort or None)
+    model_info = _format_model_info(model, reasoning_effort or None, diff)
     _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
     spinner = ThinkingIndicator(sys.stdout, label="Reviewing changes...")
     spinner.start()
