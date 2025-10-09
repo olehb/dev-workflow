@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any, Dict, List
 
 from openai import OpenAI, OpenAIError as SDKOpenAIError
 
@@ -33,6 +34,23 @@ def _build_client(api_key: str, api_base: str | None) -> OpenAI:
     if normalised:
         kwargs["base_url"] = normalised
     return OpenAI(**kwargs)
+
+
+def _extract_text_from_output(raw: Dict[str, Any]) -> str:
+    output = raw.get("output")
+    if not isinstance(output, list):
+        return ""
+    fragments: List[str] = []
+    for item in output:
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for chunk in content:
+            if chunk.get("type") == "output_text":
+                text = chunk.get("text")
+                if isinstance(text, str):
+                    fragments.append(text)
+    return "\n".join(fragments).strip()
 
 
 def call_openai(
@@ -66,8 +84,23 @@ def call_openai(
     except SDKOpenAIError as exc:
         raise OpenAIError(str(exc)) from exc
 
+    raw = response.model_dump()
     text = (response.output_text or "").strip()
     if not text:
-        raise OpenAIError("OpenAI API returned no text output.")
+        text = _extract_text_from_output(raw)
+    if not text:
+        status = raw.get("status")
+        reason = raw.get("incomplete_details", {}).get("reason")
+        prompt_tokens = raw.get("usage", {}).get("input_tokens")
+        completion_tokens = raw.get("usage", {}).get("output_tokens")
+        details = []
+        if status:
+            details.append(f"status={status}")
+        if reason:
+            details.append(f"reason={reason}")
+        if prompt_tokens is not None and completion_tokens is not None:
+            details.append(f"usage={prompt_tokens}/{completion_tokens} tokens")
+        joined = "; ".join(details) if details else "no extra details"
+        raise OpenAIError(f"OpenAI API returned no text output ({joined}).")
 
-    return OpenAIResponse(text=text, raw=response.model_dump())
+    return OpenAIResponse(text=text, raw=raw)
