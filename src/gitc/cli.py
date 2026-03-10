@@ -236,16 +236,21 @@ def commit_command(args: argparse.Namespace) -> int:
 
     try:
         proc = subprocess.run(
-            ["git", "commit", "--no-verify", "-F", "-"],
+            ["git", "commit", "-F", "-"],
             input=commit_message,
             text=True,
+            cwd=str(repo_root),
+            capture_output=True,
             check=True,
         )
     except subprocess.CalledProcessError as exc:
-        if we_staged:
-            unstage_all()
-        _print(exc.stderr or "git commit failed.", stream=sys.stderr)
+        message = (exc.stderr or exc.stdout or "git commit failed.").strip()
+        _print(message or "git commit failed.", stream=sys.stderr)
         return 1
+    if proc.stdout:
+        sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
 
     _print("Committed.", stream=sys.stdout)
 
@@ -256,7 +261,7 @@ def commit_command(args: argparse.Namespace) -> int:
             answer = ""
         if answer.lower().startswith("y"):
             try:
-                run_git(["push"])
+                run_git(["push"], echo_output=True)
             except GitError as exc:
                 _print(str(exc), stream=sys.stderr)
                 return 1
@@ -401,7 +406,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except GitError as exc:
+        _print(str(exc), stream=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":  # pragma: no cover

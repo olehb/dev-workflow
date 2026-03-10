@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -12,31 +12,53 @@ class GitError(RuntimeError):
     """Raised when a git operation fails."""
 
 
-def run_git(args: list[str], *, cwd: Path | None = None, check: bool = True, capture_output: bool = False) -> subprocess.CompletedProcess:
+def _git_error_message(exc: subprocess.CalledProcessError) -> str:
+    message = exc.stderr or exc.stdout or str(exc)
+    return message.strip() or str(exc)
+
+
+def run_git(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    capture_output: bool = False,
+    echo_output: bool = False,
+) -> subprocess.CompletedProcess:
     cmd = ["git", *args]
-    cwd = cwd or get_git_root()
     try:
+        cwd = cwd or get_git_root()
         result = subprocess.run(
             cmd,
             cwd=str(cwd),
             check=check,
             text=True,
-            capture_output=capture_output,
+            capture_output=True,
         )
     except subprocess.CalledProcessError as exc:
-        raise GitError(exc.stderr or exc.stdout or str(exc)) from exc
+        raise GitError(_git_error_message(exc)) from exc
     except FileNotFoundError as exc:  # pragma: no cover - git missing
         raise GitError("git executable not found.") from exc
+    if echo_output:
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
     return result
 
 
 def get_git_root() -> Path:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        check=True,
-        text=True,
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise GitError(_git_error_message(exc)) from exc
+    except FileNotFoundError as exc:  # pragma: no cover - git missing
+        raise GitError("git executable not found.") from exc
     return Path(result.stdout.strip())
 
 
@@ -51,17 +73,17 @@ def get_cached_diff(*, context: int | None = None) -> str:
 def stage_paths(paths: list[str]) -> None:
     if not paths:
         return
-    run_git(["add", "--verbose", "--", *paths], check=True)
+    run_git(["add", "--", *paths], cwd=Path.cwd(), check=True)
 
 
 def stage_tracked_paths(paths: list[str]) -> None:
     if not paths:
         return
-    run_git(["add", "-u", "--", *paths], check=True)
+    run_git(["add", "-u", "--", *paths], cwd=Path.cwd(), check=True)
 
 
 def stage_all_tracked(repo_root: Path) -> None:
-    run_git(["add", "-u", str(repo_root)], check=True)
+    run_git(["add", "-u", str(repo_root)], cwd=repo_root, check=True)
 
 
 def staged_files() -> list[str]:
