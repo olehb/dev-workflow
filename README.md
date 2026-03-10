@@ -10,7 +10,7 @@ pip install -e .
 
 ## Usage
 
-- `gitc commit [-a|--all] [paths ...]` – stages optionally, generates a commit message, and creates a commit.
+- `gitc commit [-a|--all] [-u|--update] [paths ...]` – stages optionally, generates a commit message, and creates a commit.
 - `gitc review [--effort {minimal,low,medium,high}] [--max-tokens N]` – requests an AI review of the staged diff.
 
 Set `OPENAI_API_KEY` in your environment before running commands.

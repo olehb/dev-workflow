@@ -12,6 +12,21 @@ from openai import OpenAI, OpenAIError as SDKOpenAIError
 class OpenAIError(RuntimeError):
     """Raised when the OpenAI API reports an error."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: str | None = None,
+        reason: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.reason = reason
+        self.prompt_tokens = prompt_tokens
+        self.completion_tokens = completion_tokens
+
 
 @dataclass
 class OpenAIResponse:
@@ -101,6 +116,12 @@ def call_openai(
         if prompt_tokens is not None and completion_tokens is not None:
             details.append(f"usage={prompt_tokens}/{completion_tokens} tokens")
         joined = "; ".join(details) if details else "no extra details"
-        raise OpenAIError(f"OpenAI API returned no text output ({joined}).")
+        raise OpenAIError(
+            f"OpenAI API returned no text output ({joined}).",
+            status=status,
+            reason=reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     return OpenAIResponse(text=text, raw=raw)

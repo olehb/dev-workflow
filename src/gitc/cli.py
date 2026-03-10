@@ -19,16 +19,19 @@ from .git_helpers import (
     run_pre_commit,
     stage_all_tracked,
     stage_paths,
+    stage_tracked_paths,
     staged_files,
     unstage_all,
 )
-from .openai_client import OpenAIError, call_openai
+from .openai_client import OpenAIError, OpenAIResponse, call_openai
 from .prompts import COMMIT_PROMPT, REVIEW_PROMPT
 
 
 RESET = "\033[0m"
 YELLOW = "\033[1;33m"
 GREEN = "\033[1;32m"
+COMMIT_REASONING_EFFORT = "minimal"
+COMMIT_RETRY_MAX_TOKENS = 4096
 
 
 def _print(msg: str, *, stream) -> None:
@@ -118,6 +121,41 @@ def _format_model_info(model: str, reasoning_effort: str | None, diff: str) -> s
     return ", ".join(info_parts)
 
 
+def _retry_commit_max_tokens(max_tokens: int) -> int | None:
+    if max_tokens >= COMMIT_RETRY_MAX_TOKENS:
+        return None
+    return min(COMMIT_RETRY_MAX_TOKENS, max(max_tokens * 4, 2048))
+
+
+def _generate_commit_message(prompt: str, diff: str, model: str, max_tokens: int) -> OpenAIResponse:
+    try:
+        return call_openai(
+            prompt=prompt,
+            diff=diff,
+            model=model,
+            max_tokens=max_tokens,
+            reasoning_effort=COMMIT_REASONING_EFFORT,
+        )
+    except OpenAIError as exc:
+        retry_max_tokens = _retry_commit_max_tokens(max_tokens)
+        if exc.reason != "max_output_tokens" or retry_max_tokens is None:
+            raise
+        _print(
+            _yellow(
+                f"Retrying commit generation with a larger output budget ({retry_max_tokens} tokens).",
+                stream=sys.stdout,
+            ),
+            stream=sys.stdout,
+        )
+        return call_openai(
+            prompt=prompt,
+            diff=diff,
+            model=model,
+            max_tokens=retry_max_tokens,
+            reasoning_effort=COMMIT_REASONING_EFFORT,
+        )
+
+
 def commit_command(args: argparse.Namespace) -> int:
     repo_root = get_git_root()
     prompt = os.environ.get("GITC_COMMIT_PROMPT", COMMIT_PROMPT)
@@ -127,14 +165,20 @@ def commit_command(args: argparse.Namespace) -> int:
     we_staged = False
 
     if preexisting_diff.strip():
-        if args.all or args.paths:
+        if args.all or args.update or args.paths:
             _print("Refusing to stage paths because staged changes already exist.", stream=sys.stderr)
             return 1
 
     if args.all:
         stage_all_tracked(repo_root)
         we_staged = True
-    if args.paths:
+    elif args.update:
+        if args.paths:
+            stage_tracked_paths(args.paths)
+        else:
+            stage_all_tracked(repo_root)
+        we_staged = True
+    if args.paths and not args.update:
         stage_paths(args.paths)
         we_staged = True
 
@@ -156,7 +200,7 @@ def commit_command(args: argparse.Namespace) -> int:
         _print("No staged changes remain after running pre-commit.", stream=sys.stderr)
         return 0
 
-    model_info = _format_model_info(model, None, diff)
+    model_info = _format_model_info(model, COMMIT_REASONING_EFFORT, diff)
     _print(_yellow(model_info, stream=sys.stdout), stream=sys.stdout)
     spinner = ThinkingIndicator(sys.stdout, label="Generating commit message...")
     spinner.start()
@@ -164,7 +208,7 @@ def commit_command(args: argparse.Namespace) -> int:
     openai_error: OpenAIError | None = None
     elapsed = 0.0
     try:
-        response = call_openai(
+        response = _generate_commit_message(
             prompt=prompt,
             diff=diff,
             model=model,
@@ -289,11 +333,18 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     commit_parser = subparsers.add_parser("commit", help="Generate a commit message and create a commit.")
-    commit_parser.add_argument(
+    stage_group = commit_parser.add_mutually_exclusive_group()
+    stage_group.add_argument(
         "-a",
         "--all",
         action="store_true",
         help="Stage all tracked changes before committing (git add -u).",
+    )
+    stage_group.add_argument(
+        "-u",
+        "--update",
+        action="store_true",
+        help="Stage only tracked changes in the given paths before committing (git add -u -- <paths>).",
     )
     commit_parser.add_argument(
         "paths",

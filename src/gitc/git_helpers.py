@@ -54,6 +54,12 @@ def stage_paths(paths: list[str]) -> None:
     run_git(["add", "--verbose", "--", *paths], check=True)
 
 
+def stage_tracked_paths(paths: list[str]) -> None:
+    if not paths:
+        return
+    run_git(["add", "-u", "--", *paths], check=True)
+
+
 def stage_all_tracked(repo_root: Path) -> None:
     run_git(["add", "-u", str(repo_root)], check=True)
 
